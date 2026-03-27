@@ -1,4 +1,6 @@
+mod checks;
 mod parsers;
+mod popular;
 mod registry;
 
 use clap::Parser;
