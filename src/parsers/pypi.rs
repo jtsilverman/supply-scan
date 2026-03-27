@@ -21,7 +21,7 @@ pub fn parse(dir: &Path) -> Vec<Package> {
 
 /// Parse a requirements.txt string.
 /// Handles: `pkg==1.0`, `pkg>=1.0`, `pkg~=1.0`, `pkg!=1.0`, `pkg<=1.0`, `pkg<1.0`, `pkg>1.0`, bare `pkg`.
-/// Skips comments (#) and empty lines.
+/// Skips comments (#), empty lines, `-e`/`-r` flags, and URL lines.
 fn parse_requirements_txt(content: &str) -> Vec<Package> {
     let mut packages = Vec::new();
 
@@ -31,11 +31,34 @@ fn parse_requirements_txt(content: &str) -> Vec<Package> {
             continue;
         }
 
+        // Skip pip flags (-e, -r, -i, -f, --index-url, etc.) and URL lines
+        if line.starts_with('-') || line.starts_with("http://") || line.starts_with("https://") {
+            continue;
+        }
+
         // Strip inline comments
         let line = line.split('#').next().unwrap().trim();
         if line.is_empty() {
             continue;
         }
+
+        // Strip environment markers (everything after ';')
+        let line = line.split(';').next().unwrap().trim();
+
+        // Strip extras (e.g., requests[security] → requests)
+        let line = if let Some(bracket_pos) = line.find('[') {
+            if let Some(close_pos) = line.find(']') {
+                let mut s = String::with_capacity(line.len());
+                s.push_str(&line[..bracket_pos]);
+                s.push_str(&line[close_pos + 1..]);
+                std::borrow::Cow::Owned(s)
+            } else {
+                std::borrow::Cow::Borrowed(line)
+            }
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
+        let line = line.as_ref();
 
         // Split on version specifiers: ==, >=, <=, ~=, !=, >, <
         let (name, version) = if let Some(pos) = line.find("==") {
@@ -90,7 +113,26 @@ fn parse_pyproject_toml(content: &str) -> Vec<Package> {
     for dep in deps {
         if let Some(s) = dep.as_str() {
             let s = s.trim();
-            // Same parsing logic as requirements.txt for individual specifiers
+
+            // Strip environment markers (everything after ';')
+            let s = s.split(';').next().unwrap().trim();
+
+            // Strip extras (e.g., requests[security] → requests)
+            let s = if let Some(bracket_pos) = s.find('[') {
+                if let Some(close_pos) = s.find(']') {
+                    let mut buf = String::with_capacity(s.len());
+                    buf.push_str(&s[..bracket_pos]);
+                    buf.push_str(&s[close_pos + 1..]);
+                    std::borrow::Cow::Owned(buf)
+                } else {
+                    std::borrow::Cow::Borrowed(s)
+                }
+            } else {
+                std::borrow::Cow::Borrowed(s)
+            };
+            let s = s.as_ref();
+
+            // Split on version specifiers: ==, >=, <=, ~=, !=, >, <
             let (name, version) = if let Some(pos) = s.find("==") {
                 (&s[..pos], &s[pos + 2..])
             } else if let Some(pos) = s.find(">=") {
@@ -188,6 +230,56 @@ dependencies = [
         assert!(pkgs.iter().any(|p| p.name == "requests" && p.version == ">=2.31.0"));
         assert!(pkgs.iter().any(|p| p.name == "flask" && p.version == "2.3.0"));
         assert!(pkgs.iter().any(|p| p.name == "numpy" && p.version == "*"));
+    }
+
+    #[test]
+    fn test_extras_stripped() {
+        let content = "requests[security]==2.31.0\nflask[async]>=2.0\n";
+        let pkgs = parse_requirements_txt(content);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "requests");
+        assert_eq!(pkgs[0].version, "2.31.0");
+        assert_eq!(pkgs[1].name, "flask");
+    }
+
+    #[test]
+    fn test_environment_markers_stripped() {
+        let content = "flask>=2.0; python_version>=\"3.8\"\n";
+        let pkgs = parse_requirements_txt(content);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "flask");
+        assert_eq!(pkgs[0].version, ">=2.0");
+    }
+
+    #[test]
+    fn test_editable_and_url_lines_skipped() {
+        let content = "\
+-e git+https://github.com/user/repo.git#egg=myrepo
+https://files.example.com/package.tar.gz
+-r other-requirements.txt
+-i https://pypi.org/simple
+numpy
+";
+        let pkgs = parse_requirements_txt(content);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].name, "numpy");
+    }
+
+    #[test]
+    fn test_pyproject_extras_and_markers() {
+        let content = r#"
+[project]
+name = "myapp"
+dependencies = [
+    "requests[security]>=2.31.0",
+    "flask>=2.0; python_version>='3.8'",
+]
+"#;
+        let pkgs = parse_pyproject_toml(content);
+        assert_eq!(pkgs.len(), 2);
+        assert_eq!(pkgs[0].name, "requests");
+        assert_eq!(pkgs[1].name, "flask");
+        assert_eq!(pkgs[1].version, ">=2.0");
     }
 
     #[test]

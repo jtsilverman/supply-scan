@@ -92,8 +92,10 @@ async fn scan_package(client: &reqwest::Client, pkg: Package, no_network: bool) 
         (meta, vulns)
     };
 
-    // 1. Existence check
-    findings.extend(checks::existence::check(&metadata));
+    // 1. Existence check (skip if no_network — metadata is always None without network)
+    if !no_network {
+        findings.extend(checks::existence::check(&metadata));
+    }
 
     // 2. Typosquat check
     findings.extend(checks::typosquat::check(&pkg.name, pkg.ecosystem));
