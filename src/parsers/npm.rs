@@ -26,7 +26,13 @@ fn parse_str(content: &str) -> Vec<Package> {
             for (name, version) in obj {
                 packages.push(Package {
                     name: name.clone(),
-                    version: version.as_str().unwrap_or("*").to_string(),
+                    version: match version.as_str() {
+                        Some(v) => v.to_string(),
+                        None => {
+                            eprintln!("Warning: non-string version for package '{}', skipping", name);
+                            continue;
+                        }
+                    },
                     ecosystem: Ecosystem::Npm,
                 });
             }
